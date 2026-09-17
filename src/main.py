@@ -9,15 +9,18 @@ from src.client import GeminiAssistant
 from src.logger import ChatLogger
 from src.file_parser import FileParser
 from src.context_manager import ContextManager
+from src.prompts import SYSTEM_ROLES, get_role_prompt, list_roles
 
 console = Console()
 
-def print_welcome_panel():
+def print_welcome_panel(current_role="default"):
     """打印顶部欢迎面板"""
+    role_name = SYSTEM_ROLES.get(current_role, {}).get("name", "通用科研助手")
     console.print(Panel.fit(
-        "[bold green]🔬 科研 AI 助手已就绪 (Day 12 智能 Token 上下文管理版)！[/bold green]\n"
-        "[dim]模块化架构 | Rich 美化 | 自动日志 | 503 重试 | 多文件/代码库扫描 | Token 监控[/dim]\n\n"
+        f"[bold green]🔬 科研 AI 助手已就绪 (Day 13 多角色/Prompt 动态切换版)！[/bold green]\n"
+        f"[dim]模块化架构 | Rich 美化 | 自动日志 | 503 重试 | 多文件扫描 | 当前角色: [/dim][bold yellow]{role_name}[/bold yellow]\n\n"
         "快捷指令：\n"
+        "• [bold cyan]/role [角色Key][/bold cyan]             : 查看可用角色列表或动态切换 System Prompt\n"
         "• [bold cyan]/read <文件1> [文件2...][/bold cyan] : 读取单个或多个本地文件进行联合分析\n"
         "• [bold cyan]/scan <目录路径>[/bold cyan]          : 扫描整个代码目录树并对源码进行整体 Review\n"
         "• [bold cyan]/tokens[/bold cyan]                      : 实时查看当前会话上下文估算 Token 数与健康度\n"
@@ -36,6 +39,7 @@ def print_help():
     table.add_column("功能说明", style="white")
     table.add_column("使用示例", style="dim")
 
+    table.add_row("/role [key]", "切换 AI 身份与 System Prompt (default, code, german, reviewer)", "/role german")
     table.add_row("/read <files>", "读取单文件或多文件，进行跨文件联合分析", "/read src/client.py src/main.py")
     table.add_row("/scan <dir>", "扫描整个项目/源码目录，提取架构并进行全局 Code Review", "/scan src/")
     table.add_row("/tokens", "显示当前对话历史的累积 Token 使用量与容量占比", "/tokens")
@@ -57,7 +61,7 @@ def main():
     history_records = []
 
     # 首次进入打印欢迎面板
-    print_welcome_panel()
+    print_welcome_panel(assistant.current_role)
 
     # 主对话循环
     while True:
@@ -74,7 +78,7 @@ def main():
             # 2. 清屏指令 /clear
             if user_input.lower() == "/clear":
                 console.clear()
-                print_welcome_panel()
+                print_welcome_panel(assistant.current_role)
                 console.print("[dim green]✨ 屏幕已清空[/dim green]")
                 continue
 
@@ -120,7 +124,34 @@ def main():
                 console.print("[bold green]🔄 对话上下文记忆已成功重置！开启全新会话（日志仍在持续归档中）。[/bold green]")
                 continue
 
-            # 7. 项目目录扫描指令 /scan
+            # 7. 角色切换指令 /role
+            if user_input.startswith("/role"):
+                parts = user_input.strip().split(maxsplit=1)
+                if len(parts) == 1:
+                    console.print(Panel("[bold cyan]🎭 可用科研角色列表[/bold cyan]", expand=False))
+                    table = Table(show_header=True, header_style="bold magenta")
+                    table.add_column("指令标识 (Key)", style="cyan", width=12)
+                    table.add_column("角色名称", style="green", width=26)
+                    table.add_column("角色描述", style="white")
+
+                    for key, info in list_roles().items():
+                        is_curr = " [bold yellow](当前)[/bold yellow]" if assistant.current_role == key else ""
+                        table.add_row(key, info["name"] + is_curr, info["description"])
+
+                    console.print(table)
+                    console.print("[dim]使用提示: 输入 [/dim][bold yellow]/role <key>[/bold yellow][dim] 即可切换角色（例: /role german）[/dim]")
+                else:
+                    target_role = parts[1].strip().lower()
+                    if target_role in SYSTEM_ROLES:
+                        new_prompt = get_role_prompt(target_role)
+                        assistant.set_system_instruction(new_prompt, target_role)
+                        role_name = SYSTEM_ROLES[target_role]["name"]
+                        console.print(f"[bold green]✓ 已成功切换至角色：{role_name}[/bold green]")
+                    else:
+                        console.print(f"[bold red]❌ 未找到角色 '{target_role}'。使用 /role 查看可用角色列表。[/bold red]")
+                continue
+
+            # 8. 项目目录扫描指令 /scan
             if user_input.startswith("/scan "):
                 dir_path = user_input[6:].strip()
                 console.print(f"[bold green]🔍 正在扫描目录 '{dir_path}' 及其代码文件...[/bold green]")
@@ -136,7 +167,7 @@ def main():
                     "summary": f"/scan {dir_path} ({len(scanned_files)} 个文件)"
                 })
 
-            # 8. 单文件/多文件读取指令 /read
+            # 9. 单文件/多文件读取指令 /read
             elif user_input.startswith("/read "):
                 file_paths = user_input[6:].strip().split()
                 if not file_paths:
