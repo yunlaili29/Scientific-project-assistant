@@ -60,8 +60,10 @@ with open(log_filename, "w", encoding="utf-8") as f:
 # 打印美化的欢迎面板
 console.print(Panel.fit(
     "[bold green]🔬 科研 AI 助手已就绪！[/bold green]\n"
-    "[dim]支持 Rich Markdown 美化渲染 | 自动保存日志至 logs/ 目录[/dim]\n"
-    "输入 [bold cyan]'exit'[/bold cyan] 或 [bold cyan]'quit'[/bold cyan] 退出对话",
+    "[dim]支持 Rich 美化 | 自动保存日志 | 支持本地文件读取[/dim]\n\n"
+    "快捷指令：\n"
+    "• [bold cyan]/read <文件路径>[/bold cyan] : 读取本地文件发送给 AI（例: /read README.md）\n"
+    "• [bold cyan]exit[/bold cyan] 或 [bold cyan]quit[/bold cyan] : 退出对话",
     border_style="cyan"
 ))
 
@@ -72,12 +74,33 @@ while True:
         if not user_input:
             continue
         
+        # 退出指令
         if user_input.lower() in ["exit", "quit"]:
             console.print("\n[bold yellow]👋 助手已退出，对话日志已自动保存，祝研究顺利！[/bold yellow]")
             break
 
-        # 发送请求
-        response = chat.send_message(user_input)
+        # 处理 /read 文件读取指令
+        if user_input.startswith("/read "):
+            file_path = user_input[6:].strip()
+            if not os.path.exists(file_path):
+                console.print(f"[bold red]❌ 错误：找不到文件 '{file_path}'，请检查路径是否正确！[/bold red]")
+                continue
+            
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    file_content = f.read()
+                
+                console.print(f"[bold green]📄 成功读取文件: {file_path}，正在发送给 AI 分析...[/bold green]")
+                # 拼接提问文本，将文件内容包装后发给 Gemini
+                prompt_to_send = f"以下是文件 `{file_path}` 的完整内容，请帮我阅读并总结分析其主要内容与代码结构：\n\n```\n{file_content}\n```"
+            except Exception as e:
+                console.print(f"[bold red]❌ 读取文件失败: {e}[/bold red]")
+                continue
+        else:
+            prompt_to_send = user_input
+
+        # 发送请求给 AI
+        response = chat.send_message(prompt_to_send)
         
         # 使用 rich 渲染 Markdown 回复
         console.print("\n[bold magenta]🤖 Assistant:[/bold magenta]")
