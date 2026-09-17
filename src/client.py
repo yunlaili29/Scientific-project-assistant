@@ -7,6 +7,10 @@ class GeminiAssistant:
     def __init__(self, console):
         self.console = console
         self.client = genai.Client(api_key=API_KEY)
+        self._init_chat()
+
+    def _init_chat(self):
+        """初始化或重置对话会话"""
         self.chat = self.client.chats.create(
             model="gemini-3.6-flash",
             config=types.GenerateContentConfig(
@@ -14,6 +18,14 @@ class GeminiAssistant:
                 temperature=0.3,
             )
         )
+
+    def reset_chat(self):
+        """重置对话会话"""
+        self._init_chat()
+
+    def get_history(self):
+        """获取当前对话历史"""
+        return self.chat.get_history()
 
     def send_message_with_retry(self, prompt, max_retries=3):
         """带有指数退避自动重试机制的消息发送方法"""

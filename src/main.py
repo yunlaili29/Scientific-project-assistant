@@ -8,18 +8,21 @@ from rich.table import Table
 from src.client import GeminiAssistant
 from src.logger import ChatLogger
 from src.file_parser import FileParser
+from src.context_manager import ContextManager
 
 console = Console()
 
 def print_welcome_panel():
     """打印顶部欢迎面板"""
     console.print(Panel.fit(
-        "[bold green]🔬 科研 AI 助手已就绪 (Day 11 项目级代码库解析版)！[/bold green]\n"
-        "[dim]模块化架构 | Rich 美化 | 自动日志 | 503 重试 | 多文件/代码库扫描[/dim]\n\n"
+        "[bold green]🔬 科研 AI 助手已就绪 (Day 12 智能 Token 上下文管理版)！[/bold green]\n"
+        "[dim]模块化架构 | Rich 美化 | 自动日志 | 503 重试 | 多文件/代码库扫描 | Token 监控[/dim]\n\n"
         "快捷指令：\n"
         "• [bold cyan]/read <文件1> [文件2...][/bold cyan] : 读取单个或多个本地文件进行联合分析\n"
         "• [bold cyan]/scan <目录路径>[/bold cyan]          : 扫描整个代码目录树并对源码进行整体 Review\n"
-        "• [bold cyan]/clear[/bold cyan]                       : 清空屏幕并重置界面\n"
+        "• [bold cyan]/tokens[/bold cyan]                      : 实时查看当前会话上下文估算 Token 数与健康度\n"
+        "• [bold cyan]/reset[/bold cyan]                       : 重置对话记忆上下文（保留日志记录）\n"
+        "• [bold cyan]/clear[/bold cyan]                       : 清空终端屏幕并重置界面\n"
         "• [bold cyan]/history[/bold cyan]                     : 查看当前会话的历史摘要列表\n"
         "• [bold cyan]/help[/bold cyan]                        : 查看所有快捷指令说明\n"
         "• [bold cyan]exit[/bold cyan] 或 [bold cyan]quit[/bold cyan]             : 退出对话",
@@ -35,6 +38,8 @@ def print_help():
 
     table.add_row("/read <files>", "读取单文件或多文件，进行跨文件联合分析", "/read src/client.py src/main.py")
     table.add_row("/scan <dir>", "扫描整个项目/源码目录，提取架构并进行全局 Code Review", "/scan src/")
+    table.add_row("/tokens", "显示当前对话历史的累积 Token 使用量与容量占比", "/tokens")
+    table.add_row("/reset", "重置记忆上下文（开启全新对话线，不影响已有日志）", "/reset")
     table.add_row("/clear", "清除终端内容，恢复干净整洁界面", "/clear")
     table.add_row("/history", "统计当前会话轮次，并打印历史提问摘要", "/history")
     table.add_row("/help", "显示此指令帮助菜单", "/help")
@@ -46,6 +51,7 @@ def main():
     # 初始化组件
     assistant = GeminiAssistant(console)
     logger = ChatLogger()
+    context_mgr = ContextManager(max_tokens=16000, keep_recent=3)
 
     # 内存中维护会话历史摘要列表
     history_records = []
@@ -93,13 +99,34 @@ def main():
                     console.print(table)
                 continue
 
-            # 5. 项目目录扫描指令 /scan
+            # 5. Token 监控指令 /tokens
+            if user_input.lower() == "/tokens":
+                history = assistant.get_history()
+                total_tokens = context_mgr.count_history_tokens(history)
+                pct = (total_tokens / context_mgr.max_tokens) * 100
+                console.print(Panel(
+                    f"📊 [bold cyan]当前会话 Token 统计[/bold cyan]\n\n"
+                    f"• 已用 Token: [bold yellow]{total_tokens}[/bold yellow] / {context_mgr.max_tokens}\n"
+                    f"• 限制容量占比: [bold green]{pct:.1f}%[/bold green]\n"
+                    f"• 历史消息数量: {len(history)} 条",
+                    border_style="blue"
+                ))
+                continue
+
+            # 6. 上下文重置指令 /reset
+            if user_input.lower() == "/reset":
+                assistant.reset_chat()
+                history_records.clear()
+                console.print("[bold green]🔄 对话上下文记忆已成功重置！开启全新会话（日志仍在持续归档中）。[/bold green]")
+                continue
+
+            # 7. 项目目录扫描指令 /scan
             if user_input.startswith("/scan "):
                 dir_path = user_input[6:].strip()
                 console.print(f"[bold green]🔍 正在扫描目录 '{dir_path}' 及其代码文件...[/bold green]")
                 
                 prompt_to_send, scanned_files = FileParser.scan_directory(dir_path)
-                if isinstance(scanned_files, str):  # 返回错误信息
+                if isinstance(scanned_files, str):
                     console.print(f"[bold red]❌ {scanned_files}[/bold red]")
                     continue
                 
@@ -109,7 +136,7 @@ def main():
                     "summary": f"/scan {dir_path} ({len(scanned_files)} 个文件)"
                 })
 
-            # 6. 单文件/多文件读取指令 /read
+            # 8. 单文件/多文件读取指令 /read
             elif user_input.startswith("/read "):
                 file_paths = user_input[6:].strip().split()
                 if not file_paths:
