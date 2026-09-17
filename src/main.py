@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 from datetime import datetime
 from dotenv import load_dotenv
 from google import genai
@@ -46,7 +47,28 @@ chat = client.chats.create(
     )
 )
 
-# 5. 准备日志存储目录与文件
+# 5. 定义带有自动重试机制的发送函数 (Network Resilience)
+def send_message_with_retry(chat_session, prompt, max_retries=3):
+    """
+    发送消息并附带指数退避自动重试逻辑，优雅应对 503 等 API 临时故障
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            response = chat_session.send_message(prompt)
+            return response
+        except Exception as e:
+            error_str = str(e)
+            # 判断是否为 503 或高负载临时错误
+            if "503" in error_str or "UNAVAILABLE" in error_str or "high demand" in error_str:
+                if attempt < max_retries:
+                    wait_time = attempt * 2  # 第一次等 2 秒，第二次等 4 秒
+                    console.print(f"[bold yellow]⚠️ 服务器临时繁忙 (503)，正在进行第 {attempt}/{max_retries} 次自动重试 (等待 {wait_time} 秒)...[/bold yellow]")
+                    time.sleep(wait_time)
+                    continue
+            # 其他无法重试的错误或已达最大重试次数，直接抛出
+            raise e
+
+# 6. 准备日志存储目录与文件
 log_dir = "logs"
 os.makedirs(log_dir, exist_ok=True)
 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -60,14 +82,14 @@ with open(log_filename, "w", encoding="utf-8") as f:
 # 打印美化的欢迎面板
 console.print(Panel.fit(
     "[bold green]🔬 科研 AI 助手已就绪！[/bold green]\n"
-    "[dim]支持 Rich 美化 | 自动保存日志 | 支持本地文件读取[/dim]\n\n"
+    "[dim]Rich 美化 | 自动保存日志 | 本地文件读取 | 503 自动重试[/dim]\n\n"
     "快捷指令：\n"
     "• [bold cyan]/read <文件路径>[/bold cyan] : 读取本地文件发送给 AI（例: /read README.md）\n"
     "• [bold cyan]exit[/bold cyan] 或 [bold cyan]quit[/bold cyan] : 退出对话",
     border_style="cyan"
 ))
 
-# 6. 交互式多轮对话循环
+# 7. 交互式多轮对话循环
 while True:
     try:
         user_input = console.input("\n[bold cyan]👤 You:[/bold cyan] ").strip()
@@ -91,7 +113,6 @@ while True:
                     file_content = f.read()
                 
                 console.print(f"[bold green]📄 成功读取文件: {file_path}，正在发送给 AI 分析...[/bold green]")
-                # 拼接提问文本，将文件内容包装后发给 Gemini
                 prompt_to_send = f"以下是文件 `{file_path}` 的完整内容，请帮我阅读并总结分析其主要内容与代码结构：\n\n```\n{file_content}\n```"
             except Exception as e:
                 console.print(f"[bold red]❌ 读取文件失败: {e}[/bold red]")
@@ -99,8 +120,8 @@ while True:
         else:
             prompt_to_send = user_input
 
-        # 发送请求给 AI
-        response = chat.send_message(prompt_to_send)
+        # 使用封装的自动重试函数发送请求
+        response = send_message_with_retry(chat, prompt_to_send)
         
         # 使用 rich 渲染 Markdown 回复
         console.print("\n[bold magenta]🤖 Assistant:[/bold magenta]")
