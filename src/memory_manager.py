@@ -52,6 +52,12 @@ class MemoryManager:
             console.print(f"[red]✖ 保存对话历史失败: {e}[/red]")
             return None
 
+    def save_to_file(self) -> str:
+        """
+        兼容 main.py 中 save_to_file 调用的别名方法
+        """
+        return self.save_chat_history()
+
     def list_history_files(self) -> list:
         """
         列出 logs 目录下的所有历史对话文件
