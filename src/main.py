@@ -1,218 +1,145 @@
 import os
 import sys
+from dotenv import load_dotenv
 from rich.console import Console
-from rich.markdown import Markdown
 from rich.panel import Panel
-from rich.table import Table
 
-from src.client import GeminiAssistant
-from src.logger import ChatLogger
-from src.file_parser import FileParser
-from src.context_manager import ContextManager
-from src.prompts import SYSTEM_ROLES, get_role_prompt, list_roles
+# 确保能正确导入同级 src 模块
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from client import Client
+from memory_manager import MemoryManager
+from pdfreader import PDFReader
+
+load_dotenv()
 console = Console()
 
-def print_welcome_panel(current_role="default"):
-    """打印顶部欢迎面板"""
-    role_name = SYSTEM_ROLES.get(current_role, {}).get("name", "通用科研助手")
-    console.print(Panel.fit(
-        f"[bold green]🔬 科研 AI 助手已就绪 (Day 13 多角色/Prompt 动态切换版)！[/bold green]\n"
-        f"[dim]模块化架构 | Rich 美化 | 自动日志 | 503 重试 | 多文件扫描 | 当前角色: [/dim][bold yellow]{role_name}[/bold yellow]\n\n"
-        "快捷指令：\n"
-        "• [bold cyan]/role [角色Key][/bold cyan]             : 查看可用角色列表或动态切换 System Prompt\n"
-        "• [bold cyan]/read <文件1> [文件2...][/bold cyan] : 读取单个或多个本地文件进行联合分析\n"
-        "• [bold cyan]/scan <目录路径>[/bold cyan]          : 扫描整个代码目录树并对源码进行整体 Review\n"
-        "• [bold cyan]/tokens[/bold cyan]                      : 实时查看当前会话上下文估算 Token 数与健康度\n"
-        "• [bold cyan]/reset[/bold cyan]                       : 重置对话记忆上下文（保留日志记录）\n"
-        "• [bold cyan]/clear[/bold cyan]                       : 清空终端屏幕并重置界面\n"
-        "• [bold cyan]/history[/bold cyan]                     : 查看当前会话的历史摘要列表\n"
-        "• [bold cyan]/help[/bold cyan]                        : 查看所有快捷指令说明\n"
-        "• [bold cyan]exit[/bold cyan] 或 [bold cyan]quit[/bold cyan]             : 退出对话",
-        border_style="cyan"
-    ))
-
-def print_help():
-    """打印美化的帮助表格"""
-    table = Table(title="💡 快捷指令说明清单", border_style="dim")
-    table.add_column("指令", style="cyan", no_wrap=True)
-    table.add_column("功能说明", style="white")
-    table.add_column("使用示例", style="dim")
-
-    table.add_row("/role [key]", "切换 AI 身份与 System Prompt (default, code, german, reviewer)", "/role german")
-    table.add_row("/read <files>", "读取单文件或多文件，进行跨文件联合分析", "/read src/client.py src/main.py")
-    table.add_row("/scan <dir>", "扫描整个项目/源码目录，提取架构并进行全局 Code Review", "/scan src/")
-    table.add_row("/tokens", "显示当前对话历史的累积 Token 使用量与容量占比", "/tokens")
-    table.add_row("/reset", "重置记忆上下文（开启全新对话线，不影响已有日志）", "/reset")
-    table.add_row("/clear", "清除终端内容，恢复干净整洁界面", "/clear")
-    table.add_row("/history", "统计当前会话轮次，并打印历史提问摘要", "/history")
-    table.add_row("/help", "显示此指令帮助菜单", "/help")
-    table.add_row("exit / quit", "安全退出助手，自动保存 Markdown 日志", "exit")
-
-    console.print(table)
-
 def main():
-    # 初始化组件
-    assistant = GeminiAssistant(console)
-    logger = ChatLogger()
-    context_mgr = ContextManager(max_tokens=16000, keep_recent=3)
+    console.print(Panel.fit("=== Scientific Project Assistant (Multi-Paper Edition) ===", style="bold green"))
+    console.print("提示: 输入 [cyan]/role[/cyan] 切换角色，输入 [cyan]/save[/cyan] 保存对话，输入 [cyan]/history[/cyan] 查看历史")
+    console.print("文献指令:")
+    console.print("  [cyan]/papers[/cyan] - 查看 papers 目录及当前加载状态")
+    console.print("  [cyan]/read <文件名.pdf>[/cyan] - 加载并阅读论文（可多次输入加载多篇）")
+    console.print("  [cyan]/clear[/cyan] - 清空当前加载的所有论文上下文")
+    console.print("  [cyan]exit[/cyan] - 退出程序\n")
 
-    # 内存中维护会话历史摘要列表
-    history_records = []
+    client = Client()
+    memory = MemoryManager()
+    pdf_reader = PDFReader()
 
-    # 首次进入打印欢迎面板
-    print_welcome_panel(assistant.current_role)
+    base_system_prompt = "你是一个专业的科研与工程助手，擅长文献阅读、多篇论文横向对比、结构仿真与学术答疑。"
+    
+    # 用字典存储多篇已加载的论文：{filename: text}
+    loaded_papers = {}
 
-    # 主对话循环
     while True:
         try:
-            user_input = console.input("\n[bold cyan]👤 You:[/bold cyan] ").strip()
+            user_input = console.input("[bold green]You:[/bold green] ").strip()
             if not user_input:
                 continue
 
-            # 1. 退出指令
-            if user_input.lower() in ["exit", "quit"]:
-                console.print("\n[bold yellow]👋 助手已退出，对话日志已自动保存，祝科研顺利！[/bold yellow]")
+            if user_input.lower() == "exit":
+                console.print("[bold yellow]再见！[/bold yellow]")
                 break
 
-            # 2. 清屏指令 /clear
-            if user_input.lower() == "/clear":
-                console.clear()
-                print_welcome_panel(assistant.current_role)
-                console.print("[dim green]✨ 屏幕已清空[/dim green]")
+            # 指令：切换系统角色
+            if user_input.lower() == "/role":
+                new_role = console.input("[bold cyan]请输入新的系统角色设定 (System Prompt): [/bold cyan]").strip()
+                if new_role:
+                    base_system_prompt = new_role
+                    console.print(f"[green]角色已更新成功！[/green]\n")
                 continue
 
-            # 3. 帮助指令 /help
-            if user_input.lower() == "/help":
-                print_help()
-                continue
-
-            # 4. 历史记录指令 /history
+            # 指令：查看历史对话
             if user_input.lower() == "/history":
-                if not history_records:
-                    console.print("[yellow]ℹ️ 当前会话暂无历史对话记录。[/yellow]")
+                messages = memory.get_messages()
+                if not messages:
+                    console.print("[yellow]当前没有历史对话记录。[/yellow]")
                 else:
-                    table = Table(title=f"📜 会话历史摘要 (共 {len(history_records)} 轮)", border_style="cyan")
-                    table.add_column("序号", style="dim", width=6)
-                    table.add_column("类型", style="bold yellow", width=10)
-                    table.add_column("输入内容 / 摘要", style="white")
-
-                    for idx, record in enumerate(history_records, 1):
-                        table.add_row(str(idx), record["type"], record["summary"])
-
-                    console.print(table)
+                    console.print("[bold cyan]=== 历史对话记录 ===[/bold cyan]")
+                    for msg in messages:
+                        role_label = "You" if msg["role"] == "user" else "Assistant"
+                        console.print(f"[bold]{role_label}:[/bold] {msg['content'][:100]}...")
                 continue
 
-            # 5. Token 监控指令 /tokens
-            if user_input.lower() == "/tokens":
-                history = assistant.get_history()
-                total_tokens = context_mgr.count_history_tokens(history)
-                pct = (total_tokens / context_mgr.max_tokens) * 100
-                console.print(Panel(
-                    f"📊 [bold cyan]当前会话 Token 统计[/bold cyan]\n\n"
-                    f"• 已用 Token: [bold yellow]{total_tokens}[/bold yellow] / {context_mgr.max_tokens}\n"
-                    f"• 限制容量占比: [bold green]{pct:.1f}%[/bold green]\n"
-                    f"• 历史消息数量: {len(history)} 条",
-                    border_style="blue"
-                ))
+            # 指令：保存对话
+            if user_input.lower() == "/save":
+                memory.save_to_file()
+                console.print("[green]对话已成功保存！[/green]")
                 continue
 
-            # 6. 上下文重置指令 /reset
-            if user_input.lower() == "/reset":
-                assistant.reset_chat()
-                history_records.clear()
-                console.print("[bold green]🔄 对话上下文记忆已成功重置！开启全新会话（日志仍在持续归档中）。[/bold green]")
+            # 指令：清空已加载的论文
+            if user_input.lower() == "/clear":
+                loaded_papers.clear()
+                console.print("[green]已清空所有当前加载的论文上下文。[/green]\n")
                 continue
 
-            # 7. 角色切换指令 /role
-            if user_input.startswith("/role"):
-                parts = user_input.strip().split(maxsplit=1)
-                if len(parts) == 1:
-                    console.print(Panel("[bold cyan]🎭 可用科研角色列表[/bold cyan]", expand=False))
-                    table = Table(show_header=True, header_style="bold magenta")
-                    table.add_column("指令标识 (Key)", style="cyan", width=12)
-                    table.add_column("角色名称", style="green", width=26)
-                    table.add_column("角色描述", style="white")
-
-                    for key, info in list_roles().items():
-                        is_curr = " [bold yellow](当前)[/bold yellow]" if assistant.current_role == key else ""
-                        table.add_row(key, info["name"] + is_curr, info["description"])
-
-                    console.print(table)
-                    console.print("[dim]使用提示: 输入 [/dim][bold yellow]/role <key>[/bold yellow][dim] 即可切换角色（例: /role german）[/dim]")
+            # 指令：查看论文列表及加载状态
+            if user_input.lower() == "/papers":
+                all_papers = pdf_reader.list_papers()
+                if not all_papers:
+                    console.print("[yellow]papers 文件夹下暂无 PDF 文件。[/yellow]")
                 else:
-                    target_role = parts[1].strip().lower()
-                    if target_role in SYSTEM_ROLES:
-                        new_prompt = get_role_prompt(target_role)
-                        assistant.set_system_instruction(new_prompt, target_role)
-                        role_name = SYSTEM_ROLES[target_role]["name"]
-                        console.print(f"[bold green]✓ 已成功切换至角色：{role_name}[/bold green]")
-                    else:
-                        console.print(f"[bold red]❌ 未找到角色 '{target_role}'。使用 /role 查看可用角色列表。[/bold red]")
+                    console.print("[bold cyan]papers 文件夹下的论文及加载状态：[/bold cyan]")
+                    for idx, paper in enumerate(all_papers, 1):
+                        status = "[green][已加载][/green]" if paper in loaded_papers else "[dim][未加载][/dim]"
+                        console.print(f"  {idx}. {paper} {status}")
+                if loaded_papers:
+                    console.print(f"\n[cyan]当前共有 {len(loaded_papers)} 篇论文在上下文中。你可以直接让 AI 对它们进行对比或提问。[/cyan]")
+                console.print()
                 continue
 
-            # 8. 项目目录扫描指令 /scan
-            if user_input.startswith("/scan "):
-                dir_path = user_input[6:].strip()
-                console.print(f"[bold green]🔍 正在扫描目录 '{dir_path}' 及其代码文件...[/bold green]")
-                
-                prompt_to_send, scanned_files = FileParser.scan_directory(dir_path)
-                if isinstance(scanned_files, str):
-                    console.print(f"[bold red]❌ {scanned_files}[/bold red]")
+            # 指令：读取指定论文 (/read filename.pdf)
+            if user_input.lower().startswith("/read "):
+                filename = user_input[6:].strip()
+                if not filename:
+                    console.print("[red]请指定文件名，例如: /read 1.pdf[/red]\n")
                     continue
-                
-                console.print(f"[bold green]✅ 成功扫描 {len(scanned_files)} 个代码文件，发送至 AI 分析...[/bold green]")
-                history_records.append({
-                    "type": "目录扫描",
-                    "summary": f"/scan {dir_path} ({len(scanned_files)} 个文件)"
-                })
+                try:
+                    console.print(f"[cyan]正在读取论文: {filename} ...[/cyan]")
+                    paper_text = pdf_reader.read_pdf(filename)
+                    
+                    # 存入多论文字典
+                    loaded_papers[filename] = paper_text
+                    
+                    # 动态拼接所有已加载论文的上下文
+                    paper_context_block = "\n\n=== 当前已加载的科研文献库 ==="
+                    for name, text in loaded_papers.items():
+                        paper_context_block += f"\n\n--- 文献名称: {name} ---\n{text}"
+                    
+                    active_system_prompt = base_system_prompt + paper_context_block
+                    
+                    # 提示用户
+                    console.print(f"[bold green]✓ 成功加载 [{filename}]！当前上下文中共有 {len(loaded_papers)} 篇文献。[/bold green]")
+                    console.print(f"[cyan]提示：你可以继续使用 /read 加载更多论文，或者直接提问（如：'请对比这些论文的方法异同'）。[/cyan]\n")
+                except Exception as e:
+                    console.print(f"[red]读取论文失败: {e}[/red]\n")
+                continue
 
-            # 9. 单文件/多文件读取指令 /read
-            elif user_input.startswith("/read "):
-                file_paths = user_input[6:].strip().split()
-                if not file_paths:
-                    console.print("[bold red]❌ 错误：请提供至少一个文件路径！[/bold red]")
-                    continue
+            # 常规对话处理：构建实时的系统提示词（自动携带所有已加载的论文库）
+            paper_context_block = ""
+            if loaded_papers:
+                paper_context_block = "\n\n=== 当前已加载的科研文献库 ==="
+                for name, text in loaded_papers.items():
+                    paper_context_block += f"\n\n--- 文献名称: {name} ---\n{text}"
 
-                combined_content, success_files, failed_files = FileParser.read_files(file_paths)
+            active_system_prompt = base_system_prompt + paper_context_block
+            
+            messages = memory.get_messages()
+            messages.append({"role": "user", "content": user_input})
 
-                for path, err in failed_files:
-                    console.print(f"[yellow]⚠️ 忽略 '{path}': {err}[/yellow]")
+            # 调用大模型生成回复
+            response_text = client.generate_response(active_system_prompt, messages)
 
-                if not success_files:
-                    console.print("[bold red]❌ 没有成功读取到任何有效文件！[/bold red]")
-                    continue
-
-                console.print(f"[bold green]📄 成功读取 {len(success_files)} 个文件，正在联合发送给 AI 分析...[/bold green]")
-                prompt_to_send = f"请联合分析以下 {len(success_files)} 个文件的内容：\n\n" + "\n\n".join(combined_content)
-                
-                history_records.append({
-                    "type": "文件联合分析",
-                    "summary": f"/read {' '.join(success_files)}"
-                })
-
-            else:
-                prompt_to_send = user_input
-                summary_text = user_input[:30] + "..." if len(user_input) > 30 else user_input
-                history_records.append({
-                    "type": "普通问答",
-                    "summary": summary_text
-                })
-
-            # 请求 AI 并处理响应
-            response = assistant.send_message_with_retry(prompt_to_send)
-
-            console.print("\n[bold magenta]🤖 Assistant:[/bold magenta]")
-            console.print(Markdown(response.text))
-
-            # 记录本地 Markdown 日志文件
-            logger.log_interaction(user_input, response.text)
+            # 记录到对话历史
+            memory.add_message("user", user_input)
+            memory.add_message("assistant", response_text)
 
         except KeyboardInterrupt:
-            console.print("\n\n[bold yellow]👋 收到中断信号，程序退出。[/bold yellow]")
+            console.print("\n[bold yellow]程序已中断。[/bold yellow]")
             break
         except Exception as e:
-            console.print(f"\n[bold red]❌ 发生错误: {e}[/bold red]")
+            console.print(f"[red]发生错误: {e}[/red]")
 
 if __name__ == "__main__":
     main()

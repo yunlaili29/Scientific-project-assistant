@@ -1,53 +1,72 @@
-# src/client.py
+import os
 import time
 from google import genai
 from google.genai import types
-from src.config import API_KEY, SYSTEM_INSTRUCTION
+from dotenv import load_dotenv
+from rich.console import Console
 
-class GeminiAssistant:
-    def __init__(self, console):
-        self.console = console
-        self.client = genai.Client(api_key=API_KEY)
-        self.current_role = "default"
-        self.system_instruction = SYSTEM_INSTRUCTION
-        self._init_chat()
+# 加载环境变量
+load_dotenv()
+console = Console()
 
-    def _init_chat(self):
-        """初始化或重新建立对话会话"""
-        self.chat = self.client.chats.create(
-            model="gemini-3.6-flash",
-            config=types.GenerateContentConfig(
-                system_instruction=self.system_instruction,
-                temperature=0.3,
-            )
+class Client:
+    def __init__(self):
+        # 初始化新版 google-genai 客户端
+        try:
+            self.client = genai.Client()
+        except Exception as e:
+            console.print(f"[yellow]初始化 Gemini 客户端警告: {e}[/yellow]")
+            self.client = None
+            
+        # 使用当前官方完全支持的最新标准模型
+        self.model_name = "gemini-3.8-flash"
+
+    def generate_response(self, system_prompt: str, messages: list) -> str:
+        """
+        使用新版 google-genai SDK 生成回复，带 503 自动重试机制
+        """
+        if not self.client:
+            raise ValueError("Gemini 客户端未正确初始化")
+
+        # 格式化历史对话内容
+        formatted_contents = []
+        for msg in messages:
+            role = "user" if msg["role"] == "user" else "model"
+            formatted_contents.append({
+                "role": role,
+                "parts": [{"text": msg["content"]}]
+            })
+
+        # 使用最简配置，避免触发旧版参数限制
+        config = types.GenerateContentConfig(
+            system_instruction=system_prompt,
+            temperature=0.7
         )
 
-    def set_system_instruction(self, new_instruction: str, role_key: str):
-        """动态更新 System Instruction 并重置/同步对话状态"""
-        self.system_instruction = new_instruction
-        self.current_role = role_key
-        # 重新加载 chat 实例，使新的 System Prompt 立即生效
-        self._init_chat()
+        # 最多重试 3 次，应对高峰期临时过载 (503)
+        max_retries = 3
+        backoff_factor = 2
 
-    def reset_chat(self):
-        """重置对话会话"""
-        self._init_chat()
-
-    def get_history(self):
-        """获取当前对话历史"""
-        return self.chat.get_history()
-
-    def send_message_with_retry(self, prompt, max_retries=3):
-        """带有指数退避自动重试机制的消息发送方法"""
-        for attempt in range(1, max_retries + 1):
+        for attempt in range(max_retries):
             try:
-                return self.chat.send_message(prompt)
+                # 调用新版客户端接口
+                response = self.client.models.generate_content(
+                    model=self.model_name,
+                    contents=formatted_contents,
+                    config=config
+                )
+                
+                console.print(f"\n[bold blue]Assistant:[/bold blue] {response.text}\n")
+                return response.text
+                
             except Exception as e:
-                error_str = str(e)
-                if "503" in error_str or "UNAVAILABLE" in error_str or "high demand" in error_str:
-                    if attempt < max_retries:
-                        wait_time = attempt * 2
-                        self.console.print(f"[bold yellow]⚠️ 服务器繁忙 (503)，正在重试 ({attempt}/{max_retries})，等待 {wait_time} 秒...[/bold yellow]")
-                        time.sleep(wait_time)
-                        continue
+                # 如果遇到 503 / 过载错误，且还有重试机会，则自动等待后重试
+                if ("503" in str(e) or "UNAVAILABLE" in str(e)) and (attempt < max_retries - 1):
+                    sleep_time = backoff_factor ** attempt
+                    console.print(f"[yellow]服务器繁忙 (503)，正在进行第 {attempt + 1} 次自动重试，等待 {sleep_time} 秒...[/yellow]")
+                    time.sleep(sleep_time)
+                    continue
+                
+                # 其他错误或重试次数用完时，打印异常并抛出
+                console.print(f"[red]Gemini API 调用异常: {e}[/red]")
                 raise e
